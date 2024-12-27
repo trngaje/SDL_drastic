@@ -78,6 +78,7 @@ static int get_driindex(void)
     DIR *folder;
     const char *hint;
     struct dirent *res;
+    int drmConn = 0;
 
     hint = SDL_GetHint(SDL_HINT_KMSDRM_DEVICE_INDEX);
     if (hint && *hint) {
@@ -118,13 +119,28 @@ static int get_driindex(void)
                                      resources->count_connectors,
                                      resources->count_encoders,
                                      resources->count_crtcs);
+			// batocera
+			{
+			  FILE* fdDrmConn;
+			  int drmConnRead;
+			  if((fdDrmConn = fopen("/var/run/drmConn", "r")) != NULL) {
+			    if(fscanf(fdDrmConn, "%i", &drmConnRead) == 1) {
+			      if(drmConnRead>=0 && drmConn<resources->count_connectors) {
+				drmConn = drmConnRead;
+			      }
+			    }
+			  }
+			}
+			//
 
                         if (resources->count_connectors > 0 &&
                             resources->count_encoders > 0 &&
                             resources->count_crtcs > 0) {
                             available = -ENOENT;
                             for (i = 0; i < resources->count_connectors && available < 0; i++) {
-                                drmModeConnector *conn =
+        			        drmModeConnector *conn;
+            				if(i != drmConn) continue;
+            				conn =
                                     KMSDRM_drmModeGetConnector(
                                         drm_fd, resources->connectors[i]);
 
@@ -790,6 +806,24 @@ static void KMSDRM_AddDisplay(_THIS, drmModeConnector *connector, drmModeRes *re
         goto cleanup;
     }
 
+    // batocera - set resolution
+    {
+      FILE* fdDrmMode;
+      int drmMode;
+      if((fdDrmMode = fopen("/var/run/drmMode", "r")) != NULL) {
+	if(fscanf(fdDrmMode, "%i", &drmMode) == 1) {
+	  if(drmMode>=0 && drmMode<connector->count_modes) {
+	    drmModeCrtc *pcrtc = KMSDRM_drmModeGetCrtc(viddata->drm_fd, encoder->crtc_id);
+	    if(pcrtc != NULL) {
+	      KMSDRM_drmModeSetCrtc(viddata->drm_fd, pcrtc->crtc_id, pcrtc->buffer_id, 0, 0, &connector->connector_id, 1, &connector->modes[drmMode]);
+	    }
+	  }
+	}
+	fclose(fdDrmMode);
+      }
+    }
+    //
+
     /* Try to find a CRTC connected to this encoder */
     crtc = KMSDRM_drmModeGetCrtc(viddata->drm_fd, encoder->crtc_id);
 
@@ -941,6 +975,7 @@ static int KMSDRM_InitDisplays(_THIS)
     uint64_t async_pageflip = 0;
     int ret = 0;
     int i;
+    int drmConn = 0;
 
     /* Open /dev/dri/cardNN (/dev/drmN if on OpenBSD version less than 6.9) */
     (void)SDL_snprintf(viddata->devpath, sizeof(viddata->devpath), "%s%d",
@@ -963,11 +998,27 @@ static int KMSDRM_InitDisplays(_THIS)
         goto cleanup;
     }
 
+    // batocera
+    {
+        FILE* fdDrmConn;
+        int drmConnRead;
+        if((fdDrmConn = fopen("/var/run/drmConn", "r")) != NULL) {
+            if(fscanf(fdDrmConn, "%i", &drmConnRead) == 1) {
+                if(drmConnRead>=0 && drmConn<resources->count_connectors) {
+                    drmConn = drmConnRead;
+                }
+            }
+        }
+    }
+    //
+
     /* Iterate on the available connectors. For every connected connector,
        we create an SDL_Display and add it to the list of SDL Displays. */
     for (i = 0; i < resources->count_connectors; i++) {
-        drmModeConnector *connector = KMSDRM_drmModeGetConnector(viddata->drm_fd,
-                                                                 resources->connectors[i]);
+        drmModeConnector *connector;
+        if(i != drmConn) continue;
+            connector = KMSDRM_drmModeGetConnector(viddata->drm_fd,
+                                                   resources->connectors[i]);
 
         if (!connector) {
             continue;
@@ -1356,8 +1407,27 @@ void KMSDRM_GetDisplayModes(_THIS, SDL_VideoDisplay *display)
     SDL_DisplayMode mode;
     int i;
 
+    // batocera
+    int wantedMode = 0;
+    {
+      FILE* fdDrmMode;
+      int drmMode;
+      if((fdDrmMode = fopen("/var/run/drmMode", "r")) != NULL) {
+	if(fscanf(fdDrmMode, "%i", &drmMode) == 1) {
+	  if(drmMode>=0 && drmMode<conn->count_modes) {
+	    wantedMode = drmMode;
+	  }
+	}
+	fclose(fdDrmMode);
+      }
+    }
+    //
+
     for (i = 0; i < conn->count_modes; i++) {
-        SDL_DisplayModeData *modedata = SDL_calloc(1, sizeof(SDL_DisplayModeData));
+        SDL_DisplayModeData *modedata;
+        if(i != wantedMode) continue; // batocera
+
+        modedata = SDL_calloc(1, sizeof(SDL_DisplayModeData));
 
         if (modedata) {
             modedata->mode_index = i;
